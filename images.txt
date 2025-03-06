@@ -1,1 +1,2 @@
-infiniflow/ragflow:v0.17.0
+yanwk/comfyui-boot:cu124-megapak-20250303
+yanwk/comfyui-boot:cu124-cn-20250303
