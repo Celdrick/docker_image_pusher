@@ -1,2 +1,1 @@
-container-registry.oracle.com/database/free:latest
-downloads.unstructured.io/unstructured-io/unstructured-api:latest
+infiniflow/ragflow:v0.17.0
