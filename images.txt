@@ -1,2 +1,2 @@
-yanwk/comfyui-boot:cu124-megapak-20250303
-yanwk/comfyui-boot:cu124-cn-20250303
+xprobe/xinference:v1.3.1
+infiniflow/ragflow:v0.17.0-slim
