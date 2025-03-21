@@ -1,1 +1,1 @@
-rustdesk/rustdesk-server:latest
+infiniflow/ragflow:v0.17.2
