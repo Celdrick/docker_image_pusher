@@ -1,1 +1,2 @@
-sonatype/nexus3:3.78.2-alpine
+langgenius/dify-api:1.1.2
+langgenius/dify-web:1.1.2
