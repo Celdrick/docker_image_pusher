@@ -82,121 +82,121 @@ jobs:
           name_space_prefix="${name_space:+${name_space}_}"
           target_image="${ALIYUN_REGISTRY}/${ALIYUN_NAME_SPACE}/${platform_prefix}${name_space_prefix}${image_name}:${tag}"
           
-          exists=$(mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
+          exists=\$(mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
             --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} \
             -N -s -e "SELECT COUNT(*) FROM push_history 
             WHERE registry_image_name='${target_image}' 
             AND digest=(docker inspect --format='{{.RepoDigests}}' ${image} | awk '{print \$1}')")
           
-          if [ "$exists" -gt 0 ]; then
-            echo "镜像已存在，跳过: ${target_image}"
+          if [ "\$exists" -gt 0 ]; then
+            echo "镜像已存在，跳过: \${target_image}"
             continue
           fi
           
-          start_time=$(date +%s)
-          digest=$(docker inspect --format='{{.RepoDigests}}' ${image} | awk '{print $1}' | cut -d@ -f2)
+          start_time=\$(date +%s)
+          digest=\$(docker inspect --format='{{.RepoDigests}}' \${image} | awk '{print \$1}' | cut -d@ -f2)
           
           mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
             --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
             INSERT INTO push_history 
             (registry_url, image_name, registry_image_name, digest, architecture) 
             VALUES 
-            ('${ALIYUN_REGISTRY}', '${image_name}:${tag}', '${target_image}', '${digest}', '${platform}');
+            ('${ALIYUN_REGISTRY}', '${image_name}:${tag}', '\${target_image}', '\${digest}', '${platform}');
           EOF
           
-          if docker pull $line && \
-             docker tag ${image} ${target_image} && \
-             docker push ${target_image} 2>&1 | tee push.log; then
+          if docker pull \$line && \
+             docker tag \${image} \${target_image} && \
+             docker push \${target_image} 2>&1 | tee push.log; then
              
-            duration=$(( $(date +%s) - start_time ))
-            digest=$(grep "digest" push.log | awk '{print $NF}')
-            size=$(docker inspect --format='{{.Size}}' ${image})
+            duration=\$(( \$(date +%s) - start_time ))
+            digest=\$(grep "digest" push.log | awk '{print \$NF}')
+            size=\$(docker inspect --format='{{.Size}}' \${image})
             
             mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
               --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
               UPDATE push_history 
               SET push_status='success',
-                  image_size=${size},
-                  push_duration=${duration},
-                  digest='${digest}'
-              WHERE registry_image_name='${target_image}';
+                  image_size=\${size},
+                  push_duration=\${duration},
+                  digest='\${digest}'
+              WHERE registry_image_name='\${target_image}';
             EOF
           else
             mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
               --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
               UPDATE push_history 
               SET push_status='failed' 
-              WHERE registry_image_name='${target_image}';
+              WHERE registry_image_name='\${target_image}';
             EOF
             exit 1
           fi
           
-          docker rmi ${image} ${target_image} || true
+          docker rmi \${image} \${target_image} || true
         done < images.txt
 
     - name: Process Private Registry Images
       run: |
-        while IFS= read -r line || [ -n "$line" ]; do
-          [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
+        while IFS= read -r line || [ -n "\$line" ]; do
+          [[ -z "\$line" || "\$line" =~ ^\s*# ]] && continue
           
-          image=$(echo "$line" | awk '{print $NF}' | cut -d@ -f1)
-          platform=$(echo "$line" | awk -F'--platform[ =]' '{print $2}' | awk '{print $1}')
-          name_space=$(echo "$image" | awk -F'/' '{if(NF==3)print $2; else if(NF==2)print $1}')
-          image_name=$(echo "$image" | awk -F'/' '{print $NF}' | awk -F':' '{print $1}')
-          tag=$(echo "$image" | awk -F':' '{print $2}')
+          image=\$(echo "\$line" | awk '{print \$NF}' | cut -d@ -f1)
+          platform=\$(echo "\$line" | awk -F'--platform[ =]' '{print \$2}' | awk '{print \$1}')
+          name_space=\$(echo "\$image" | awk -F'/' '{if(NF==3)print \$2; else if(NF==2)print \$1}')
+          image_name=\$(echo "\$image" | awk -F'/' '{print \$NF}' | awk -F':' '{print \$1}')
+          tag=\$(echo "\$image" | awk -F':' '{print \$2}')
           
-          platform_prefix="${platform//\//_}_"
-          name_space_prefix="${name_space:+${name_space}_}"
-          target_image="${PRIVATE_REGISTRY}/${platform_prefix}${name_space_prefix}${image_name}:${tag}"
+          platform_prefix="\${platform//\//_}_"
+          name_space_prefix="\${name_space:+\${name_space}_}"
+          target_image="${PRIVATE_REGISTRY}/\${platform_prefix}\${name_space_prefix}\${image_name}:\${tag}"
           
-          exists=$(mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
+          exists=\$(mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
             --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} \
             -N -s -e "SELECT COUNT(*) FROM push_history 
-            WHERE registry_image_name='${target_image}' 
-            AND digest=(docker inspect --format='{{.RepoDigests}}' ${image} | awk '{print \$1}')")
+            WHERE registry_image_name='\${target_image}' 
+            AND digest=(docker inspect --format='{{.RepoDigests}}' \${image} | awk '{print \$1}')")
           
-          if [ "$exists" -gt 0 ]; then
-            echo "镜像已存在，跳过: ${target_image}"
+          if [ "\$exists" -gt 0 ]; then
+            echo "镜像已存在，跳过: \${target_image}"
             continue
           fi
           
-          start_time=$(date +%s)
-          digest=$(docker inspect --format='{{.RepoDigests}}' ${image} | awk '{print $1}' | cut -d@ -f2)
+          start_time=\$(date +%s)
+          digest=\$(docker inspect --format='{{.RepoDigests}}' \${image} | awk '{print \$1}' | cut -d@ -f2)
           
           mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
             --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
             INSERT INTO push_history 
             (registry_url, image_name, registry_image_name, digest, architecture) 
             VALUES 
-            ('${PRIVATE_REGISTRY}', '${image_name}:${tag}', '${target_image}', '${digest}', '${platform}');
+            ('${PRIVATE_REGISTRY}', '\${image_name}:\${tag}', '\${target_image}', '\${digest}', '\${platform}');
           EOF
           
-          if docker pull $line && \
-             docker tag ${image} ${target_image} && \
-             docker push ${target_image} 2>&1 | tee push.log; then
+          if docker pull \$line && \
+             docker tag \${image} \${target_image} && \
+             docker push \${target_image} 2>&1 | tee push.log; then
              
-            duration=$(( $(date +%s) - start_time ))
-            digest=$(grep "digest" push.log | awk '{print $NF}')
-            size=$(docker inspect --format='{{.Size}}' ${image})
+            duration=\$(( \$(date +%s) - start_time ))
+            digest=\$(grep "digest" push.log | awk '{print \$NF}')
+            size=\$(docker inspect --format='{{.Size}}' \${image})
             
             mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
               --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
               UPDATE push_history 
               SET push_status='success',
-                  image_size=${size},
-                  push_duration=${duration},
-                  digest='${digest}'
-              WHERE registry_image_name='${target_image}';
+                  image_size=\${size},
+                  push_duration=\${duration},
+                  digest='\${digest}'
+              WHERE registry_image_name='\${target_image}';
             EOF
           else
             mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
               --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
               UPDATE push_history 
               SET push_status='failed' 
-              WHERE registry_image_name='${target_image}';
+              WHERE registry_image_name='\${target_image}';
             EOF
             exit 1
           fi
           
-          docker rmi ${image} ${target_image} || true
+          docker rmi \${image} \${target_image} || true
         done < images.txt
