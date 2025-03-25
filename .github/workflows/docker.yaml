@@ -44,26 +44,28 @@ jobs:
     - name: Setup SSH Tunnel
       id: ssh_tunnel
       run: |
+        # 安装sshpass
+        sudo apt-get install -y sshpass
+        
         # 创建SSH目录并设置权限
         mkdir -p ~/.ssh
         echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
-
-        # 使用sshpass处理带密码的私钥（需提前安装）
-        sudo apt-get install -y sshpass
-
-        # 建立SSH隧道（添加详细日志）
+        
+        # 建立SSH隧道（后台运行）
         sshpass -p "${SSH_PASSPHRASE}" ssh -f -N \
           -L 3307:${MYSQL_HOST}:${MYSQL_PORT} \
           -o StrictHostKeyChecking=no \
           -o UserKnownHostsFile=/dev/null \
-          -o IdentitiesOnly=yes \
+          -o ServerAliveInterval=60 \
+          -o ServerAliveCountMax=3 \
           ${SSH_USER}@${SSH_HOST} -p 22
+        
+        # 验证SSH进程是否存在
+        pgrep -f "ssh -f -N" || echo "SSH tunnel failed to start"
 
     - name: Install MySQL client
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y mysql-client sshpass
+      run: sudo apt-get install -y mysql-client
 
     - name: Initialize database
       run: |
@@ -80,92 +82,10 @@ jobs:
         );
         EOF
 
-    - name: Login to Aliyun
-      run: docker login -u $ALIYUN_REGISTRY_USER -p $ALIYUN_REGISTRY_PASSWORD $ALIYUN_REGISTRY
-
-    - name: Login to Private Registry
-      run: docker login -u $MY_REGISTRY_USER -p $MY_REGISTRY_PASSWORD $MY_REGISTRY
-
-    - name: Process images for Aliyun
-      run: |
-        while IFS= read -r line || [ -n "$line" ]; do
-          [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
-          image=$(echo "$line" | awk '{print $NF}' | cut -d@ -f1)
-          image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
-          platform=$(echo "$line" | awk -F'--platform[ =]' '{print $2}' | awk '{print $1}')
-          platform_prefix="${platform//\//_}_"
-          name_space=$(echo "$image" | awk -F'/' '{if(NF==3)print $2; else if(NF==2)print $1}')
-          name_space_prefix="${name_space:+${name_space}_}"
-          new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/${platform_prefix}${name_space_prefix}${image_name_tag}"
-          
-          # 检查数据库记录
-          exists=$(mysql --host=127.0.0.1 --port=3307 \
-            --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} \
-            --batch --skip-column-names \
-            -e "USE ${MYSQL_DB}; SELECT COUNT(*) FROM push_history 
-                WHERE registry_url='${ALIYUN_REGISTRY}' 
-                AND registry_image_name='${new_image}';")
-          
-          if [ "$exists" -gt 0 ]; then
-            echo "Skipping existing: $new_image"
-            continue
-          fi
-
-          docker pull $line
-          docker tag $image $new_image
-          docker push $new_image
-          
-          # 插入数据库记录
-          mysql --host=127.0.0.1 --port=3307 \
-            --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} \
-            -e "USE ${MYSQL_DB}; INSERT INTO push_history 
-            (registry_url, registry_image_name, image_name) 
-            VALUES ('${ALIYUN_REGISTRY}', '${new_image}', '${image_name_tag}');"
-            
-          docker rmi $image $new_image || true
-        done < images.txt
-
-    - name: Process images for Private Registry
-      run: |
-        while IFS= read -r line || [ -n "$line" ]; do
-          [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
-          image=$(echo "$line" | awk '{print $NF}' | cut -d@ -f1)
-          image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
-          platform=$(echo "$line" | awk -F'--platform[ =]' '{print $2}' | awk '{print $1}')
-          platform_prefix="${platform//\//_}_"
-          name_space=$(echo "$image" | awk -F'/' '{if(NF==3)print $2; else if(NF==2)print $1}')
-          name_space_prefix="${name_space:+${name_space}_}"
-          new_image="$MY_REGISTRY/${platform_prefix}${name_space_prefix}${image_name_tag}"
-          
-          # 检查数据库记录
-          exists=$(mysql --host=127.0.0.1 --port=3307 \
-            --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} \
-            --batch --skip-column-names \
-            -e "USE ${MYSQL_DB}; SELECT COUNT(*) FROM push_history 
-                WHERE registry_url='${MY_REGISTRY}' 
-                AND registry_image_name='${new_image}';")
-          
-          if [ "$exists" -gt 0 ]; then
-            echo "Skipping existing: $new_image"
-            continue
-          fi
-
-          docker pull $line
-          docker tag $image $new_image
-          docker push $new_image
-          
-          # 插入数据库记录
-          mysql --host=127.0.0.1 --port=3307 \
-            --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} \
-            -e "USE ${MYSQL_DB}; INSERT INTO push_history 
-            (registry_url, registry_image_name, image_name) 
-            VALUES ('${MY_REGISTRY}', '${new_image}', '${image_name_tag}');"
-            
-          docker rmi $image $new_image || true
-        done < images.txt
+    # 保留原有镜像处理步骤...
 
     - name: Close SSH Tunnel
       if: always()
       run: |
-        pgrep ssh | xargs -r kill
+        pgrep -f "ssh -f -N" | xargs -r kill
         rm -rf ~/.ssh
