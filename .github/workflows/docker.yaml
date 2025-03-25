@@ -44,20 +44,25 @@ jobs:
     - name: Setup SSH Tunnel
       id: ssh_tunnel
       run: |
-        # 创建SSH配置文件
+        # 创建SSH目录并设置权限
         mkdir -p ~/.ssh
         echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
-        
-        # 建立SSH隧道
-        ssh -f -N -L 3307:${MYSQL_HOST}:${MYSQL_PORT} \
+
+        # 使用sshpass处理带密码的私钥（需提前安装）
+        sudo apt-get install -y sshpass
+
+        # 建立SSH隧道（添加详细日志）
+        sshpass -p "${SSH_PASSPHRASE}" ssh -vvv -f -N \
+          -L 3307:${MYSQL_HOST}:${MYSQL_PORT} \
           -o StrictHostKeyChecking=no \
           -o UserKnownHostsFile=/dev/null \
-          ${SSH_USER}@${SSH_HOST} \
-          -p 22
-        
-        echo "::add-mask::${SSH_PASSPHRASE}"
-        echo "::add-mask::${SSH_PRIVATE_KEY}"
+          -o IdentitiesOnly=yes \
+          ${SSH_USER}@${SSH_HOST} -p 22
+
+        # 验证隧道连接
+        echo "Testing tunnel connection..."
+        curl -v telnet://127.0.0.1:3307
 
     - name: Install MySQL client
       run: |
@@ -66,7 +71,7 @@ jobs:
 
     - name: Initialize database
       run: |
-        mysql --host=127.0.0.1 --port=63307 \
+        mysql --host=127.0.0.1 --port=3307 \
           --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} <<EOF
         CREATE DATABASE IF NOT EXISTS ${MYSQL_DB};
         USE ${MYSQL_DB};
