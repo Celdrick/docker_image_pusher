@@ -8,186 +8,121 @@ env:
   ALIYUN_NAME_SPACE: "${{ secrets.ALIYUN_NAME_SPACE }}"
   ALIYUN_REGISTRY_USER: "${{ secrets.ALIYUN_REGISTRY_USER }}"
   ALIYUN_REGISTRY_PASSWORD: "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}"
-  MY_REGISTRY: "${{ secrets.MY_REGISTRY }}"      # 私有仓库地址（HTTP）
-  MY_REGISTRY_USER: "${{ secrets.MY_REGISTRY_USER }}"
-  MY_REGISTRY_PASSWORD: "${{ secrets.MY_REGISTRY_PASSWORD }}"
-  MYSQL_HOST: "${{ secrets.MYSQL_HOST }}"
-  MYSQL_PORT: "${{ secrets.MYSQL_PORT }}"
-  MYSQL_DB: "${{ secrets.MYSQL_DB }}"
-  MYSQL_USER: "${{ secrets.MYSQL_USER }}"
-  MYSQL_PASSWORD: "${{ secrets.MYSQL_PASSWORD }}"
+  PRIVATE_REGISTRY: "${{ secrets.PRIVATE_REGISTRY }}"  # 新增私有仓库地址
+  PRIVATE_REGISTRY_USER: "${{ secrets.PRIVATE_REGISTRY_USER }}"
+  PRIVATE_REGISTRY_PASSWORD: "${{ secrets.PRIVATE_REGISTRY_PASSWORD }}"
 
 jobs:
   build:
-    name: Docker Pull & Push
+    name: Pull and Push
     runs-on: ubuntu-latest
     steps:
-    # --- 安装依赖 ---
-    - name: Install MySQL Client
-      run: sudo apt-get update && sudo apt-get install -y mysql-client
-
-    # --- 配置Docker ---
-    - name: Fix Docker Temp Directory
+    - name: Before freeing up disk space
       run: |
-        sudo mkdir -p /var/lib/docker/tmp
-        sudo chmod 777 /var/lib/docker/tmp
+        echo "Before freeing up disk space"
+        echo "=============================================================================="
+        df -hT
+        echo "=============================================================================="
 
-    - name: Configure Docker for Insecure Registry
-      run: |
-        echo '{"insecure-registries": ["${{ env.MY_REGISTRY }}"]}' | sudo tee /etc/docker/daemon.json
-        sudo systemctl daemon-reload
-        sudo systemctl restart docker
-
-    # --- 释放磁盘空间 ---
-    - name: Maximize Build Space
+    - name: Maximize build space
       uses: easimon/maximize-build-space@master
       with:
         root-reserve-mb: 2048
         swap-size-mb: 128
         remove-dotnet: 'true'
         remove-haskell: 'true'
-        build-mount-path: '/var/lib/docker/buildx'  # 避免与Docker默认路径冲突
+        build-mount-path: '/var/lib/docker/'
 
-    - name: Verify Disk Space
+    - name: Restart Docker
+      run: sudo service docker restart
+
+    - name: Free up disk space complete
       run: |
-        echo "Before build:"
-        df -hT /var/lib/docker
+        echo "Free up disk space complete"
+        echo "=============================================================================="
+        df -hT
+        echo "=============================================================================="
 
-    # --- 初始化数据库 ---
-    - name: Create MySQL Schema
-      run: |
-        mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD -e "CREATE DATABASE IF NOT EXISTS $MYSQL_DB;"
-        mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DB -e "
-          CREATE TABLE IF NOT EXISTS push_history (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            registry_url VARCHAR(255) NOT NULL,
-            image_name VARCHAR(255) NOT NULL,
-            push_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-            registry_image_name VARCHAR(255) NOT NULL UNIQUE,
-            push_status VARCHAR(50) NOT NULL,
-            image_size BIGINT DEFAULT 0,
-            digest VARCHAR(255),
-            INDEX idx_registry_image (registry_image_name)
-          );
-        "
-
-    # --- 准备环境 ---
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Setup Docker Buildx
+    - name: Docker Setup Buildx
       uses: docker/setup-buildx-action@v3
 
-    # --- 登录仓库 ---
-    - name: Login to Aliyun Registry
-      run: docker login -u $ALIYUN_REGISTRY_USER -p $ALIYUN_REGISTRY_PASSWORD $ALIYUN_REGISTRY
-
-    - name: Login to Private Registry
-      run: docker login -u $MY_REGISTRY_USER -p $MY_REGISTRY_PASSWORD $MY_REGISTRY
-
-    # --- 阿里云推送 ---
-    - name: Push to Aliyun
-      env:
-        ALIYUN_REGISTRY: ${{ env.ALIYUN_REGISTRY }}
-        ALIYUN_NAME_SPACE: ${{ env.ALIYUN_NAME_SPACE }}
+    - name: Login to registries
       run: |
+        docker login -u $ALIYUN_REGISTRY_USER -p $ALIYUN_REGISTRY_PASSWORD $ALIYUN_REGISTRY
+        docker login -u $PRIVATE_REGISTRY_USER -p $PRIVATE_REGISTRY_PASSWORD $PRIVATE_REGISTRY
+
+    - name: Build and push images
+      run: |
+        declare -A duplicate_images
+        declare -A temp_map
+
+        # 第一步：预处理镜像名称，检测重复
         while IFS= read -r line || [ -n "$line" ]; do
-          [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
-
-          # 解析镜像信息
-          image=$(echo "$line" | awk '{print $NF}' | cut -d@ -f1)
-          image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
-          platform=$(echo "$line" | awk -F'--platform[ =]' '{print $2}' | awk '{print $1}')
-          platform_prefix="${platform//\//_}_"
-          name_space=$(echo "$image" | awk -F'/' '{if(NF==3)print $2; else if(NF==2)print $1}')
-          name_space_prefix="${name_space:+${name_space}_}"
-
-          # 生成目标镜像名
-          registry_image_name="${platform_prefix}${name_space_prefix}${image_name_tag}"
-          new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$registry_image_name"
-
-          # 检查是否已存在
-          exists=$(mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DB \
-            -N -e "SELECT COUNT(*) FROM push_history WHERE registry_image_name='$registry_image_name' AND registry_url='$ALIYUN_REGISTRY';")
-          if [ "$exists" -eq 1 ]; then
-            echo "Skipping existing: $registry_image_name (Aliyun)"
+          [[ -z "$line" ]] && continue
+          if echo "$line" | grep -q '^\s*#'; then
             continue
           fi
 
-          # 处理镜像
-          docker pull $line
-          docker tag $image $new_image
-          push_status="success"
-          image_size=$(docker inspect --format='{{.Size}}' $image)
-          digest=$(docker inspect --format='{{index .RepoDigests 0}}' $new_image 2>/dev/null || echo 'N/A')
-
-          if ! docker push $new_image; then
-            push_status="failed"
-          fi
-
-          # 记录到数据库
-          mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DB -e "
-            INSERT INTO push_history (registry_url, image_name, push_status, registry_image_name, image_size, digest)
-            VALUES ('$ALIYUN_REGISTRY', '$image_name_tag', '$push_status', '$registry_image_name', $image_size, '$digest');
-          "
-
-          # 清理
-          docker rmi $image $new_image || true
-          echo "Cleaned up $image and $new_image"
-        done < images.txt
-
-    # --- 私有仓库推送 ---
-    - name: Push to Private Registry
-      env:
-        MY_REGISTRY: ${{ env.MY_REGISTRY }}
-      run: |
-        while IFS= read -r line || [ -n "$line" ]; do
-          [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
-
-          # 解析镜像信息
           image=$(echo "$line" | awk '{print $NF}' | cut -d@ -f1)
           image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
-          platform=$(echo "$line" | awk -F'--platform[ =]' '{print $2}' | awk '{print $1}')
-          platform_prefix="${platform//\//_}_"
-          name_space=$(echo "$image" | awk -F'/' '{if(NF==3)print $2; else if(NF==2)print $1}')
-          name_space_prefix="${name_space:+${name_space}_}"
+          name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
+          name_space="${name_space//_/-}"  # 替换命名空间中的下划线为连字符
+          image_name=$(echo "$image_name_tag" | awk -F: '{print $1}')
 
-          # 生成目标镜像名
-          registry_image_name="${platform_prefix}${name_space_prefix}${image_name_tag}"
-          new_image="$MY_REGISTRY/$registry_image_name"
+          if [[ -n "${temp_map[$image_name]}" ]]; then
+            if [[ "${temp_map[$image_name]}" != "$name_space" ]]; then
+              duplicate_images[$image_name]="true"
+            fi
+          else
+            temp_map[$image_name]="$name_space"
+          fi
+        done < images.txt
 
-          # 检查是否已存在
-          exists=$(mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DB \
-            -N -e "SELECT COUNT(*) FROM push_history WHERE registry_image_name='$registry_image_name' AND registry_url='$MY_REGISTRY';")
-          if [ "$exists" -eq 1 ]; then
-            echo "Skipping existing: $registry_image_name (Private)"
+        # 第二步：处理镜像并推送
+        while IFS= read -r line || [ -n "$line" ]; do
+          [[ -z "$line" ]] && continue
+          if echo "$line" | grep -q '^\s*#'; then
             continue
           fi
 
-          # 处理镜像
+          echo "Processing image: $line"
           docker pull $line
-          docker tag $image $new_image
-          push_status="success"
-          image_size=$(docker inspect --format='{{.Size}}' $image)
-          digest=$(docker inspect --format='{{index .RepoDigests 0}}' $new_image 2>/dev/null || echo 'N/A')
-
-          if ! docker push $new_image; then
-            push_status="failed"
+          platform=$(echo "$line" | awk -F'--platform[ =]' '{if (NF>1) print $2}' | awk '{print $1}')
+          platform_prefix=""
+          if [ -n "$platform" ]; then
+            platform_prefix="${platform//\//_}_"
           fi
 
-          # 记录到数据库
-          mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DB -e "
-            INSERT INTO push_history (registry_url, image_name, push_status, registry_image_name, image_size, digest)
-            VALUES ('$MY_REGISTRY', '$image_name_tag', '$push_status', '$registry_image_name', $image_size, '$digest');
-          "
+          image=$(echo "$line" | awk '{print $NF}' | cut -d@ -f1)
+          image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
+          # 处理默认tag
+          if [[ "$image_name_tag" != *":"* ]]; then
+            image_name_tag="${image_name_tag}:latest"
+          fi
+
+          name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
+          name_space_prefix=""
+          if [[ -n "${duplicate_images[$image_name]}" ]]; then
+            if [[ -n "$name_space" ]]; then
+              name_space_prefix="${name_space//_/-}_"
+            fi
+          fi
+
+          # 生成镜像名称
+          aliyun_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$platform_prefix$name_space_prefix$image_name_tag"
+          private_image="$PRIVATE_REGISTRY/$ALIYYUN_NAME_SPACE/$platform_prefix$name_space_prefix$image_name_tag"  # 注意这里ALIYUN_NAME_SPACE应为ALIYUN_NAME_SPACE，可能是笔误
+
+          # 推送逻辑
+          docker tag $image $aliyun_image
+          docker push $aliyun_image || echo "阿里云推送失败，继续执行"
+          docker tag $image $private_image
+          docker push $private_image || echo "私有仓库推送失败，继续执行"
 
           # 清理
-          docker rmi $image $new_image || true
-          echo "Cleaned up $image and $new_image"
+          docker rmi $image || true
+          docker rmi $aliyun_image || true
+          docker rmi $private_image || true
         done < images.txt
-
-    # --- 清理与验证 ---
-    - name: Verify Final Disk Space
-      run: |
-        echo "After build:"
-        df -hT /var/lib/docker
