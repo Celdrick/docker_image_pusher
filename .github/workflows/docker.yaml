@@ -1,157 +1,170 @@
 name: Docker
-
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
-
-
 env:
   ALIYUN_REGISTRY: "${{ secrets.ALIYUN_REGISTRY }}"
   ALIYUN_NAME_SPACE: "${{ secrets.ALIYUN_NAME_SPACE }}"
   ALIYUN_REGISTRY_USER: "${{ secrets.ALIYUN_REGISTRY_USER }}"
   ALIYUN_REGISTRY_PASSWORD: "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}"
+  MY_REGISTRY: "${{ secrets.MY_REGISTRY }}"
+  MY_REGISTRY_USER: "${{ secrets.MY_REGISTRY_USER }}"
+  MY_REGISTRY_PASSWORD: "${{ secrets.MY_REGISTRY_PASSWORD }}"
+  MYSQL_HOST: "10.0.0.130"
+  MYSQL_PORT: "3306"
+  MYSQL_DB: "${{ secrets.MYSQL_DB }}"
+  MYSQL_USER: "${{ secrets.MYSQL_USER }}"
+  MYSQL_PASSWORD: "${{ secrets.MYSQL_PASSWORD }}"
+  SSH_HOST: "${{ secrets.SSH_HOST }}"
+  SSH_USER: "${{ secrets.SSH_USER }}"
+  SSH_PRIVATE_KEY: "${{ secrets.SSH_PRIVATE_KEY }}"
+  SSH_PASSPHRASE: "${{ secrets.SSH_PASSPHRASE }}"
 
 jobs:
-
   build:
-    name: Pull
+    name: Pull and Push
     runs-on: ubuntu-latest
     steps:
-    - name: Before freeing up disk space
+    - name: Configure Docker insecure registry
       run: |
-        echo "Before freeing up disk space"
-        echo "=============================================================================="
-        df -hT
-        echo "=============================================================================="
+        echo '{"insecure-registries": ["${{ env.MY_REGISTRY }}"]}' | sudo tee /etc/docker/daemon.json
+        sudo systemctl daemon-reload
+        sudo systemctl restart docker
 
-    # 增加可用磁盘空间
     - name: Maximize build space
       uses: easimon/maximize-build-space@master
       with:
-
         root-reserve-mb: 2048
         swap-size-mb: 128
         remove-dotnet: 'true'
         remove-haskell: 'true'
-        # 如果空间还是不够用，可以把以下开启，清理出更多空间
-        # remove-android: 'true'
-        # remove-codeql: 'true'
         build-mount-path: '/var/lib/docker/'
 
-    - name: Restart docker
-      run: sudo service docker restart
-
-    - name: Free up disk space complete
+    - name: Setup SSH Tunnel
+      id: ssh_tunnel
       run: |
-        echo "Free up disk space complete"
-        echo "=============================================================================="
-        df -hT
-        echo "=============================================================================="
+        # 创建SSH配置文件
+        mkdir -p ~/.ssh
+        echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        
+        # 建立SSH隧道
+        ssh -f -N -L 3307:${MYSQL_HOST}:${MYSQL_PORT} \
+          -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          ${SSH_USER}@${SSH_HOST} \
+          -p 22
+        
+        echo "::add-mask::${SSH_PASSPHRASE}"
+        echo "::add-mask::${SSH_PRIVATE_KEY}"
 
-    - name: Checkout Code
-      uses: actions/checkout@v4
-
-    - name: Docker Setup Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Build and push image Aliyun
+    - name: Install MySQL client
       run: |
-        docker login -u $ALIYUN_REGISTRY_USER -p $ALIYUN_REGISTRY_PASSWORD $ALIYUN_REGISTRY
-        # 数据预处理,判断镜像是否重名
-        declare -A duplicate_images
-        declare -A temp_map
-        while IFS= read -r line || [ -n "$line" ]; do
-            # 忽略空行与注释
-            [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q '^\s*#'; then
-                continue
-            fi
-            
-            # 获取镜像的完整名称，例如kasmweb/nginx:1.25.3（命名空间/镜像名:版本号）
-            image=$(echo "$line" | awk '{print $NF}')
-            # 将@sha256:等字符删除
-            image="${image%%@*}"
-            echo "image $image"
-            # 获取镜像名:版本号  例如nginx:1.25.3
-            image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
-            echo "image_name_tag $image_name_tag"
-            # 获取命名空间 例如kasmweb,  这里有种特殊情况 docker.io/nginx，把docker.io当成命名空间，也OK
-            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
-            echo "name_space: $name_space"
-            # 这里不要是空值影响判断
-            name_space="${name_space}_"
-            # 获取镜像名例如nginx
-            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
-            echo "image_name: $image_name"
-            
-            # 如果镜像存在于数组中，则添加temp_map
-            if [[ -n "${temp_map[$image_name]}" ]]; then
-                 # 如果temp_map已经存在镜像名，判断是不是同一命名空间
-                 if [[ "${temp_map[$image_name]}" != $name_space  ]]; then
-                    echo "duplicate image name: $image_name"
-                    duplicate_images[$image_name]="true"
-                 fi
-            else
-                # 存镜像的命名空间
-                temp_map[$image_name]=$name_space
-            fi       
-        done < images.txt
-        
-        
-        while IFS= read -r line || [ -n "$line" ]; do
-            # 忽略空行与注释
-            [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q '^\s*#'; then
-                continue
-            fi
-        
-            echo "docker pull $line"
-            docker pull $line
-            platform=$(echo "$line" | awk -F'--platform[ =]' '{if (NF>1) print $2}' | awk '{print $1}')
-            echo "platform is $platform"
-            # 如果存在架构信息 将架构信息拼到镜像名称前面
-            if [ -z "$platform" ]; then
-                platform_prefix=""
-            else
-                platform_prefix="${platform//\//_}_"
-            fi
-            echo "platform_prefix is $platform_prefix"
-            # 获取镜像的完整名称，例如kasmweb/nginx:1.25.3（命名空间/镜像名:版本号）
-            image=$(echo "$line" | awk '{print $NF}')
+        sudo apt-get update
+        sudo apt-get install -y mysql-client sshpass
 
-            # 获取 镜像名:版本号  例如nginx:1.25.3
-            image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
-            # 获取命名空间 例如kasmweb  这里有种特殊情况 docker.io/nginx，把docker.io当成命名空间，也OK
-            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
-            # 获取镜像名例  例如nginx
-            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
-        
-            name_space_prefix=""
-            # 如果镜像名重名
-            if [[ -n "${duplicate_images[$image_name]}" ]]; then
-               #如果命名空间非空，将命名空间加到前缀
-               if [[ -n "${name_space}" ]]; then
-                  name_space_prefix="${name_space}_"
-               fi
-            fi
+    - name: Initialize database
+      run: |
+        mysql --host=127.0.0.1 --port=63307 \
+          --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} <<EOF
+        CREATE DATABASE IF NOT EXISTS ${MYSQL_DB};
+        USE ${MYSQL_DB};
+        CREATE TABLE IF NOT EXISTS push_history (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          registry_url VARCHAR(255) NOT NULL,
+          registry_image_name VARCHAR(255) NOT NULL,
+          image_name VARCHAR(255) NOT NULL,
+          push_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        EOF
+
+    - name: Login to Aliyun
+      run: docker login -u $ALIYUN_REGISTRY_USER -p $ALIYUN_REGISTRY_PASSWORD $ALIYUN_REGISTRY
+
+    - name: Login to Private Registry
+      run: docker login -u $MY_REGISTRY_USER -p $MY_REGISTRY_PASSWORD $MY_REGISTRY
+
+    - name: Process images for Aliyun
+      run: |
+        while IFS= read -r line || [ -n "$line" ]; do
+          [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
+          image=$(echo "$line" | awk '{print $NF}' | cut -d@ -f1)
+          image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
+          platform=$(echo "$line" | awk -F'--platform[ =]' '{print $2}' | awk '{print $1}')
+          platform_prefix="${platform//\//_}_"
+          name_space=$(echo "$image" | awk -F'/' '{if(NF==3)print $2; else if(NF==2)print $1}')
+          name_space_prefix="${name_space:+${name_space}_}"
+          new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/${platform_prefix}${name_space_prefix}${image_name_tag}"
+          
+          # 检查数据库记录
+          exists=$(mysql --host=127.0.0.1 --port=3307 \
+            --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} \
+            --batch --skip-column-names \
+            -e "USE ${MYSQL_DB}; SELECT COUNT(*) FROM push_history 
+                WHERE registry_url='${ALIYUN_REGISTRY}' 
+                AND registry_image_name='${new_image}';")
+          
+          if [ "$exists" -gt 0 ]; then
+            echo "Skipping existing: $new_image"
+            continue
+          fi
+
+          docker pull $line
+          docker tag $image $new_image
+          docker push $new_image
+          
+          # 插入数据库记录
+          mysql --host=127.0.0.1 --port=3307 \
+            --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} \
+            -e "USE ${MYSQL_DB}; INSERT INTO push_history 
+            (registry_url, registry_image_name, image_name) 
+            VALUES ('${ALIYUN_REGISTRY}', '${new_image}', '${image_name_tag}');"
             
-            # 将@sha256:等字符删除
-            image_name_tag="${image_name_tag%%@*}"
-            new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$platform_prefix$name_space_prefix$image_name_tag"
-            echo "docker tag $image $new_image"
-            docker tag $image $new_image
-            echo "docker push $new_image"
-            docker push $new_image
-            echo "开始清理磁盘空间"
-            echo "=============================================================================="
-            df -hT
-            echo "=============================================================================="
-            docker rmi $image
-            docker rmi $new_image
-            echo "磁盘空间清理完毕"
-            echo "=============================================================================="
-            df -hT
-            echo "=============================================================================="     
-            
+          docker rmi $image $new_image || true
         done < images.txt
+
+    - name: Process images for Private Registry
+      run: |
+        while IFS= read -r line || [ -n "$line" ]; do
+          [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
+          image=$(echo "$line" | awk '{print $NF}' | cut -d@ -f1)
+          image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
+          platform=$(echo "$line" | awk -F'--platform[ =]' '{print $2}' | awk '{print $1}')
+          platform_prefix="${platform//\//_}_"
+          name_space=$(echo "$image" | awk -F'/' '{if(NF==3)print $2; else if(NF==2)print $1}')
+          name_space_prefix="${name_space:+${name_space}_}"
+          new_image="$MY_REGISTRY/${platform_prefix}${name_space_prefix}${image_name_tag}"
+          
+          # 检查数据库记录
+          exists=$(mysql --host=127.0.0.1 --port=3307 \
+            --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} \
+            --batch --skip-column-names \
+            -e "USE ${MYSQL_DB}; SELECT COUNT(*) FROM push_history 
+                WHERE registry_url='${MY_REGISTRY}' 
+                AND registry_image_name='${new_image}';")
+          
+          if [ "$exists" -gt 0 ]; then
+            echo "Skipping existing: $new_image"
+            continue
+          fi
+
+          docker pull $line
+          docker tag $image $new_image
+          docker push $new_image
+          
+          # 插入数据库记录
+          mysql --host=127.0.0.1 --port=3307 \
+            --user=${MYSQL_USER} --password=${MYSQL_PASSWORD} \
+            -e "USE ${MYSQL_DB}; INSERT INTO push_history 
+            (registry_url, registry_image_name, image_name) 
+            VALUES ('${MY_REGISTRY}', '${new_image}', '${image_name_tag}');"
+            
+          docker rmi $image $new_image || true
+        done < images.txt
+
+    - name: Close SSH Tunnel
+      if: always()
+      run: |
+        pgrep ssh | xargs -r kill
+        rm -rf ~/.ssh
