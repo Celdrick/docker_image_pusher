@@ -51,6 +51,7 @@ jobs:
         mkdir -p ~/.ssh
         echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
+        cat ~/.ssh/id_rsa
         
         # 建立SSH隧道（后台运行）
         sshpass -p "${SSH_PASSPHRASE}" ssh -f -N \
