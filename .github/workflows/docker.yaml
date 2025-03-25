@@ -53,16 +53,12 @@ jobs:
         sudo apt-get install -y sshpass
 
         # 建立SSH隧道（添加详细日志）
-        sshpass -p "${SSH_PASSPHRASE}" ssh -vvv -f -N \
+        sshpass -p "${SSH_PASSPHRASE}" ssh -f -N \
           -L 3307:${MYSQL_HOST}:${MYSQL_PORT} \
           -o StrictHostKeyChecking=no \
           -o UserKnownHostsFile=/dev/null \
           -o IdentitiesOnly=yes \
           ${SSH_USER}@${SSH_HOST} -p 22
-
-        # 验证隧道连接
-        echo "Testing tunnel connection..."
-        curl -v telnet://127.0.0.1:3307
 
     - name: Install MySQL client
       run: |
