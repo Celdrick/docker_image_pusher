@@ -1,202 +1,147 @@
-name: Docker Image Sync
+name: Docker
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
 env:
-  ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
-  ALIYUN_NAME_SPACE: ${{ secrets.ALIYUN_NAME_SPACE }}
-  ALIYUN_USER: ${{ secrets.ALIYUN_REGISTRY_USER }}
-  ALIYUN_PASS: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
-  PRIVATE_REGISTRY: ${{ secrets.MY_REGISTRY }}
-  PRIVATE_USER: ${{ secrets.MY_REGISTRY_USER }}
-  PRIVATE_PASS: ${{ secrets.MY_REGISTRY_PASSWORD }}
-  MYSQL_HOST: ${{ secrets.MYSQL_HOST }}
-  MYSQL_PORT: ${{ secrets.MYSQL_PORT }}
-  MYSQL_DB: ${{ secrets.MYSQL_DB }}
-  MYSQL_USER: ${{ secrets.MYSQL_USER }}
-  MYSQL_PASS: ${{ secrets.MYSQL_PASSWORD }}
-
+  ALIYUN_REGISTRY: "${{ secrets.ALIYUN_REGISTRY }}"
+  ALIYUN_NAME_SPACE: "${{ secrets.ALIYUN_NAME_SPACE }}"
+  ALIYUN_REGISTRY_USER: "${{ secrets.ALIYUN_REGISTRY_USER }}"
+  ALIYUN_REGISTRY_PASSWORD: "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}"
+  MY_REGISTRY: "${{ secrets.MY_REGISTRY }}"
+  MY_REGISTRY_USER: "${{ secrets.MY_REGISTRY_USER }}"
+  MY_REGISTRY_PASSWORD: "${{ secrets.MY_REGISTRY_PASSWORD }}"
+  MYSQL_HOST: "${{ secrets.MYSQL_HOST }}"
+  MYSQL_PORT: "${{ secrets.MYSQL_PORT }}"
+  MYSQL_DB: "${{ secrets.MYSQL_DB }}"
+  MYSQL_USER: "${{ secrets.MYSQL_USER }}"
+  MYSQL_PASSWORD: "${{ secrets.MYSQL_PASSWORD }}"
 jobs:
-  sync:
+  build:
+    name: Pull and Push
     runs-on: ubuntu-latest
     steps:
-    - name: Configure Docker Insecure Registry
+    - name: Install MySQL Client
+      run: sudo apt-get update && sudo apt-get install -y mysql-client
+
+    - name: Configure Docker insecure registry
       run: |
-        echo "{\"insecure-registries\": [\"${PRIVATE_REGISTRY}\"]}" | sudo tee /etc/docker/daemon.json
+        echo '{"insecure-registries": ["${{ env.MY_REGISTRY }}"]}' | sudo tee /etc/docker/daemon.json
         sudo systemctl daemon-reload
         sudo systemctl restart docker
 
-    - name: Maximize Build Space
-      uses: easimon/maximize-build-space@v2
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
       with:
         root-reserve-mb: 2048
-        swap-size-mb: 1024
-        remove-dotnet: true
-        remove-haskell: true
-        build-mount-path: /var/lib/docker
+        swap-size-mb: 128
+        remove-dotnet: 'true'
+        remove-haskell: 'true'
+        build-mount-path: '/var/lib/docker/'
 
-    - name: Setup MySQL Client
+    - name: Create MySQL Schema
       run: |
-        sudo apt-get update
-        sudo apt-get install -y mysql-client
+        mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD -e "CREATE DATABASE IF NOT EXISTS $MYSQL_DB;"
+        mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DB -e "
+          CREATE TABLE IF NOT EXISTS push_history (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            registry_url VARCHAR(255) NOT NULL,
+            image_name VARCHAR(255) NOT NULL,
+            push_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+            registry_image_name VARCHAR(255) NOT NULL UNIQUE,
+            push_status VARCHAR(50) NOT NULL,
+            image_size BIGINT DEFAULT 0,
+            digest VARCHAR(255),
+            INDEX idx_registry_image (registry_image_name)
+          );
+        "
 
-    - name: Initialize Database
-      run: |
-        mysql --host="${MYSQL_HOST}" --port="${MYSQL_PORT}" \
-          --user="${MYSQL_USER}" --password="${MYSQL_PASS}" <<EOF
-        CREATE DATABASE IF NOT EXISTS ${MYSQL_DB};
-        USE ${MYSQL_DB};
-        CREATE TABLE IF NOT EXISTS push_history (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          registry_url VARCHAR(255) NOT NULL,
-          image_name VARCHAR(255) NOT NULL,
-          registry_image_name VARCHAR(255) NOT NULL,
-          digest VARCHAR(71) NOT NULL,
-          push_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-          push_status ENUM('pending','success','failed') DEFAULT 'pending',
-          image_size BIGINT UNSIGNED,
-          architecture VARCHAR(50),
-          push_duration INT,
-          UNIQUE INDEX idx_unique_image (registry_image_name, digest)
-        );
-        EOF
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-    - name: Login to Registries
-      run: |
-        docker login -u "${ALIYUN_USER}" -p "${ALIYUN_PASS}" "${ALIYUN_REGISTRY}"
-        docker login -u "${PRIVATE_USER}" -p "${PRIVATE_PASS}" "${PRIVATE_REGISTRY}"
+    - name: Docker Setup Buildx
+      uses: docker/setup-buildx-action@v3
 
-    - name: Process Aliyun Images
+    # 阿里云推送步骤
+    - name: Process images for Aliyun
       run: |
         while IFS= read -r line || [ -n "$line" ]; do
           [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
-          
           image=$(echo "$line" | awk '{print $NF}' | cut -d@ -f1)
+          image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
           platform=$(echo "$line" | awk -F'--platform[ =]' '{print $2}' | awk '{print $1}')
-          name_space=$(echo "$image" | awk -F'/' '{if(NF==3)print $2; else if(NF==2)print $1}')
-          image_name=$(echo "$image" | awk -F'/' '{print $NF}' | awk -F':' '{print $1}')
-          tag=$(echo "$image" | awk -F':' '{print $2}')
-          
           platform_prefix="${platform//\//_}_"
+          name_space=$(echo "$image" | awk -F'/' '{if(NF==3)print $2; else if(NF==2)print $1}')
           name_space_prefix="${name_space:+${name_space}_}"
-          target_image="${ALIYUN_REGISTRY}/${ALIYUN_NAME_SPACE}/${platform_prefix}${name_space_prefix}${image_name}:${tag}"
+          new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/${platform_prefix}${name_space_prefix}${image_name_tag}"
+          registry_image_name="${platform_prefix}${name_space_prefix}${image_name_tag}"
           
-          exists=$(mysql --host="${MYSQL_HOST}" --port="${MYSQL_PORT}" \
-            --user="${MYSQL_USER}" --password="${MYSQL_PASS}" "${MYSQL_DB}" \
-            -N -s -e "SELECT COUNT(*) FROM push_history 
-            WHERE registry_image_name='${target_image}' 
-            AND digest=(docker inspect --format='{{.RepoDigests}}' ${image} | awk '{print \$1}')")
-          
-          if [ "$exists" -gt 0 ]; then
-            echo "镜像已存在，跳过: ${target_image}"
+          # 检查是否已存在
+          exists=$(mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DB -N -e "SELECT COUNT(*) FROM push_history WHERE registry_image_name='$registry_image_name';")
+          if [ "$exists" -eq 1 ]; then
+            echo "Skipping existing: $registry_image_name"
             continue
           fi
-          
-          start_time=$(date +%s)
-          digest=$(docker inspect --format='{{.RepoDigests}}' "${image}" | awk '{print $1}' | cut -d@ -f2)
-          
-          mysql --host="${MYSQL_HOST}" --port="${MYSQL_PORT}" \
-            --user="${MYSQL_USER}" --password="${MYSQL_PASS}" "${MYSQL_DB}" <<-EOF
-            INSERT INTO push_history 
-            (registry_url, image_name, registry_image_name, digest, architecture) 
-            VALUES 
-            ('${ALIYUN_REGISTRY}', '${image_name}:${tag}', '${target_image}', '${digest}', '${platform}');
-          EOF
-          
-          if docker pull "${line}" && \
-             docker tag "${image}" "${target_image}" && \
-             docker push "${target_image}" 2>&1 | tee push.log; then
-             
-            duration=$(( $(date +%s) - start_time ))
-            digest=$(grep "digest" push.log | awk '{print $NF}')
-            size=$(docker inspect --format='{{.Size}}' "${image}")
-            
-            mysql --host="${MYSQL_HOST}" --port="${MYSQL_PORT}" \
-              --user="${MYSQL_USER}" --password="${MYSQL_PASS}" "${MYSQL_DB}" <<-EOF
-              UPDATE push_history 
-              SET push_status='success',
-                  image_size=${size},
-                  push_duration=${duration},
-                  digest='${digest}'
-              WHERE registry_image_name='${target_image}';
-            EOF
+
+          docker pull $line
+          docker tag $image $new_image
+          push_status="success"
+          image_size=$(docker inspect --format='{{.Size}}' $image)
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' $new_image 2>/dev/null || echo 'N/A')
+
+          if docker push $new_image; then
+            push_status="success"
           else
-            mysql --host="${MYSQL_HOST}" --port="${MYSQL_PORT}" \
-              --user="${MYSQL_USER}" --password="${MYSQL_PASS}" "${MYSQL_DB}" <<-EOF
-              UPDATE push_history 
-              SET push_status='failed' 
-              WHERE registry_image_name='${target_image}';
-            EOF
-            exit 1
+            push_status="failed"
           fi
-          
-          docker rmi "${image}" "${target_image}" || true
+
+          # 记录到数据库
+          mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DB -e "
+            INSERT INTO push_history (registry_url, image_name, push_status, registry_image_name, image_size, digest)
+            VALUES ('$ALIYUN_REGISTRY', '$image_name_tag', '$push_status', '$registry_image_name', $image_size, '$digest');
+          "
+
+          docker rmi $image $new_image || true
         done < images.txt
 
-    - name: Process Private Registry Images
+    # 私有仓库推送步骤
+    - name: Process images for Private Registry
       run: |
         while IFS= read -r line || [ -n "$line" ]; do
           [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
-          
           image=$(echo "$line" | awk '{print $NF}' | cut -d@ -f1)
+          image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
           platform=$(echo "$line" | awk -F'--platform[ =]' '{print $2}' | awk '{print $1}')
-          name_space=$(echo "$image" | awk -F'/' '{if(NF==3)print $2; else if(NF==2)print $1}')
-          image_name=$(echo "$image" | awk -F'/' '{print $NF}' | awk -F':' '{print $1}')
-          tag=$(echo "$image" | awk -F':' '{print $2}')
-          
           platform_prefix="${platform//\//_}_"
+          name_space=$(echo "$image" | awk -F'/' '{if(NF==3)print $2; else if(NF==2)print $1}')
           name_space_prefix="${name_space:+${name_space}_}"
-          target_image="${PRIVATE_REGISTRY}/${platform_prefix}${name_space_prefix}${image_name}:${tag}"
+          new_image="$MY_REGISTRY/${platform_prefix}${name_space_prefix}${image_name_tag}"
+          registry_image_name="${platform_prefix}${name_space_prefix}${image_name_tag}"
           
-          exists=$(mysql --host="${MYSQL_HOST}" --port="${MYSQL_PORT}" \
-            --user="${MYSQL_USER}" --password="${MYSQL_PASS}" "${MYSQL_DB}" \
-            -N -s -e "SELECT COUNT(*) FROM push_history 
-            WHERE registry_image_name='${target_image}' 
-            AND digest=(docker inspect --format='{{.RepoDigests}}' ${image} | awk '{print \$1}')")
-          
-          if [ "$exists" -gt 0 ]; then
-            echo "镜像已存在，跳过: ${target_image}"
+          # 检查是否已存在
+          exists=$(mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DB -N -e "SELECT COUNT(*) FROM push_history WHERE registry_image_name='$registry_image_name';")
+          if [ "$exists" -eq 1 ]; then
+            echo "Skipping existing: $registry_image_name"
             continue
           fi
-          
-          start_time=$(date +%s)
-          digest=$(docker inspect --format='{{.RepoDigests}}' "${image}" | awk '{print $1}' | cut -d@ -f2)
-          
-          mysql --host="${MYSQL_HOST}" --port="${MYSQL_PORT}" \
-            --user="${MYSQL_USER}" --password="${MYSQL_PASS}" "${MYSQL_DB}" <<-EOF
-            INSERT INTO push_history 
-            (registry_url, image_name, registry_image_name, digest, architecture) 
-            VALUES 
-            ('${PRIVATE_REGISTRY}', '${image_name}:${tag}', '${target_image}', '${digest}', '${platform}');
-          EOF
-          
-          if docker pull "${line}" && \
-             docker tag "${image}" "${target_image}" && \
-             docker push "${target_image}" 2>&1 | tee push.log; then
-             
-            duration=$(( $(date +%s) - start_time ))
-            digest=$(grep "digest" push.log | awk '{print $NF}')
-            size=$(docker inspect --format='{{.Size}}' "${image}")
-            
-            mysql --host="${MYSQL_HOST}" --port="${MYSQL_PORT}" \
-              --user="${MYSQL_USER}" --password="${MYSQL_PASS}" "${MYSQL_DB}" <<-EOF
-              UPDATE push_history 
-              SET push_status='success',
-                  image_size=${size},
-                  push_duration=${duration},
-                  digest='${digest}'
-              WHERE registry_image_name='${target_image}';
-            EOF
+
+          docker pull $line
+          docker tag $image $new_image
+          push_status="success"
+          image_size=$(docker inspect --format='{{.Size}}' $image)
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' $new_image 2>/dev/null || echo 'N/A')
+
+          if docker push $new_image; then
+            push_status="success"
           else
-            mysql --host="${MYSQL_HOST}" --port="${MYSQL_PORT}" \
-              --user="${MYSQL_USER}" --password="${MYSQL_PASS}" "${MYSQL_DB}" <<-EOF
-              UPDATE push_history 
-              SET push_status='failed' 
-              WHERE registry_image_name='${target_image}';
-            EOF
-            exit 1
+            push_status="failed"
           fi
-          
-          docker rmi "${image}" "${target_image}" || true
+
+          # 记录到数据库
+          mysql -h $MYSQL_HOST -P $MYSQL_PORT -u $MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DB -e "
+            INSERT INTO push_history (registry_url, image_name, push_status, registry_image_name, image_size, digest)
+            VALUES ('$MY_REGISTRY', '$image_name_tag', '$push_status', '$registry_image_name', $image_size, '$digest');
+          "
+
+          docker rmi $image $new_image || true
         done < images.txt
