@@ -97,11 +97,11 @@ jobs:
           digest=$(docker inspect --format='{{.RepoDigests}}' ${image} | awk '{print $1}' | cut -d@ -f2)
           
           mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
-            --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<EOF
-          INSERT INTO push_history 
-          (registry_url, image_name, registry_image_name, digest, architecture) 
-          VALUES 
-          ('${ALIYUN_REGISTRY}', '${image_name}:${tag}', '${target_image}', '${digest}', '${platform}');
+            --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
+            INSERT INTO push_history 
+            (registry_url, image_name, registry_image_name, digest, architecture) 
+            VALUES 
+            ('${ALIYUN_REGISTRY}', '${image_name}:${tag}', '${target_image}', '${digest}', '${platform}');
           EOF
           
           if docker pull $line && \
@@ -113,20 +113,20 @@ jobs:
             size=$(docker inspect --format='{{.Size}}' ${image})
             
             mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
-              --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<EOF
-            UPDATE push_history 
-            SET push_status='success',
-                image_size=${size},
-                push_duration=${duration},
-                digest='${digest}'
-            WHERE registry_image_name='${target_image}';
+              --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
+              UPDATE push_history 
+              SET push_status='success',
+                  image_size=${size},
+                  push_duration=${duration},
+                  digest='${digest}'
+              WHERE registry_image_name='${target_image}';
             EOF
           else
             mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
-              --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<EOF
-            UPDATE push_history 
-            SET push_status='failed' 
-            WHERE registry_image_name='${target_image}';
+              --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
+              UPDATE push_history 
+              SET push_status='failed' 
+              WHERE registry_image_name='${target_image}';
             EOF
             exit 1
           fi
@@ -164,11 +164,11 @@ jobs:
           digest=$(docker inspect --format='{{.RepoDigests}}' ${image} | awk '{print $1}' | cut -d@ -f2)
           
           mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
-            --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<EOF
-          INSERT INTO push_history 
-          (registry_url, image_name, registry_image_name, digest, architecture) 
-          VALUES 
-          ('${PRIVATE_REGISTRY}', '${image_name}:${tag}', '${target_image}', '${digest}', '${platform}');
+            --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
+            INSERT INTO push_history 
+            (registry_url, image_name, registry_image_name, digest, architecture) 
+            VALUES 
+            ('${PRIVATE_REGISTRY}', '${image_name}:${tag}', '${target_image}', '${digest}', '${platform}');
           EOF
           
           if docker pull $line && \
@@ -180,20 +180,20 @@ jobs:
             size=$(docker inspect --format='{{.Size}}' ${image})
             
             mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
-              --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<EOF
-            UPDATE push_history 
-            SET push_status='success',
-                image_size=${size},
-                push_duration=${duration},
-                digest='${digest}'
-            WHERE registry_image_name='${target_image}';
+              --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
+              UPDATE push_history 
+              SET push_status='success',
+                  image_size=${size},
+                  push_duration=${duration},
+                  digest='${digest}'
+              WHERE registry_image_name='${target_image}';
             EOF
           else
             mysql --host=${MYSQL_HOST} --port=${MYSQL_PORT} \
-              --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<EOF
-            UPDATE push_history 
-            SET push_status='failed' 
-            WHERE registry_image_name='${target_image}';
+              --user=${MYSQL_USER} --password=${MYSQL_PASS} ${MYSQL_DB} <<-EOF
+              UPDATE push_history 
+              SET push_status='failed' 
+              WHERE registry_image_name='${target_image}';
             EOF
             exit 1
           fi
