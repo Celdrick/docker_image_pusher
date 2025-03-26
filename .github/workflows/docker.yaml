@@ -48,7 +48,7 @@ jobs:
 
     - name: Configure Docker for Insecure Registry
       run: |
-        echo '{"insecure-registries": ["${{ env.MY_REGISTRY }}"]}' | sudo tee /etc/docker/daemon.json
+        echo "{\"insecure-registries\": [\"${{ secrets.MY_REGISTRY }}\"]}" | sudo tee /etc/docker/daemon.json
         sudo systemctl daemon-reload
         sudo systemctl restart docker
         docker info | grep insecure-registries
