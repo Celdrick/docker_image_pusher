@@ -39,8 +39,8 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Docker Setup Buildx
-      uses: docker/setup-buildx-action@v3
+    # - name: Docker Setup Buildx
+    #   uses: docker/setup-buildx-action@v3
 
     - name: Set up MySQL client
       run: |
@@ -48,7 +48,7 @@ jobs:
 
     - name: Configure Docker for Insecure Registry
       run: |
-        echo "{\"insecure-registries\": [\"${{ secrets.MY_REGISTRY }}\"]}" | sudo tee /etc/docker/daemon.json
+        echo "{\"insecure-registries\": [\"${{ secrets.MY_REGISTRY }}\"],\"experimental\": true}" | sudo tee /etc/docker/daemon.json
         sudo systemctl daemon-reload
         sudo systemctl restart docker
 
@@ -96,8 +96,8 @@ jobs:
             if [ "$count" -eq 0 ]; then
                 echo "Processing $orig_image_name for $target_registry_url..."
 
-                # Pull source image with buildx for multi-arch
-                docker buildx pull --platform "$platform" "$source_registry_url/$orig_name_space/$orig_image:$tag"
+                # Pull source image for multi-arch
+                docker pull --platform "$platform" "$source_registry_url/$orig_name_space/$orig_image:$tag"
 
                 # Tag image
                 docker tag "$source_registry_url/$orig_name_space/$orig_image:$tag" "$target_image"
