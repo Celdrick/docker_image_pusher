@@ -78,7 +78,7 @@ jobs:
         MY_REGISTRY: ${{ secrets.MY_REGISTRY }}
       run: |
         #!/bin/bash
-        set -e
+        set -xv
 
         process_image() {
             local source_registry_url="$1"
