@@ -51,7 +51,6 @@ jobs:
         echo "{\"insecure-registries\": [\"${{ secrets.MY_REGISTRY }}\"]}" | sudo tee /etc/docker/daemon.json
         sudo systemctl daemon-reload
         sudo systemctl restart docker
-        docker info | grep insecure-registries
 
     - name: Create database and tables
       run: |
