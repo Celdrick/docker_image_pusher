@@ -78,7 +78,7 @@ jobs:
         MY_REGISTRY: ${{ secrets.MY_REGISTRY }}
       run: |
         #!/bin/bash
-        set -e
+        set -xv
 
         process_image() {
             local source_registry_url="$1"
@@ -116,7 +116,7 @@ jobs:
         }
 
         # Fetch pending images
-        mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -D "$MYSQL_DB" -N -e "SELECT source_registry_url, orig_name_space, orig_image_name, platform FROM images_for_push WHERE push_status = 0" | while read -r source_registry_url orig_name_space orig_image_name platform; do
+        mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -D "$MYSQL_DB" -N -e "SELECT source_registry_url, orig_name_space, orig_image_name, platform FROM images_for_push" | while read -r source_registry_url orig_name_space orig_image_name platform; do
             # Process for Aliyun
             process_image "$source_registry_url" "$orig_name_space" "$orig_image_name" "$ALIYUN_REGISTRY" "$ALIYUN_NAME_SPACE" "$platform"
 
