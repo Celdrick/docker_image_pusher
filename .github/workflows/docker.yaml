@@ -1,62 +1,44 @@
-name: Docker
+name: Push Images to Registries
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
+  schedule:
+    - cron: '0 0 * * *'  # 每天凌晨执行
 
 jobs:
-  build:
-    name: Pull
+  push-images:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Before freeing up disk space
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    - name: Set up Docker Buildx
       run: |
-        echo "Before freeing up disk space"
-        echo "=============================================================================="
-        df -hT
-        echo "=============================================================================="
+        docker buildx create --use --name mybuilder
+        docker buildx inspect --bootstrap
 
-    - name: Maximize build space
-      uses: easimon/maximize-build-space@master
-      with:
-        root-reserve-mb: 2048
-        swap-size-mb: 128
-        remove-dotnet: 'true'
-        remove-haskell: 'true'
-        build-mount-path: '/var/lib/docker/'
-
-    - name: Restart Docker
-      run: sudo service docker restart
-
-    - name: Free up disk space complete
+    - name: Set up Docker
       run: |
-        echo "Free up disk space complete"
-        echo "=============================================================================="
-        df -hT
-        echo "=============================================================================="
-
-    - name: Checkout Code
-      uses: actions/checkout@v4
-
-    - name: Docker Setup Buildx
-      uses: docker/setup-buildx-action@v3
+        sudo apt-get update && sudo apt-get install -y docker.io
+        sudo systemctl start docker
+        docker --version
 
     - name: Set up MySQL client
       run: |
         sudo apt-get install -y mysql-client
 
-    - name: Configure Docker for Insecure Registry
+    - name: Configure Docker for insecure registry
       run: |
         echo "{\"insecure-registries\": [\"${{ secrets.MY_REGISTRY }}\"]}" | sudo tee /etc/docker/daemon.json
-        sudo systemctl daemon-reload
         sudo systemctl restart docker
+        docker info | grep insecure-registries
 
-    # - name: Create database and tables
-    #   run: |
-    #     mysql -h ${{ secrets.MYSQL_HOST }} -P ${{ secrets.MYSQL_PORT }} -u ${{ secrets.MYSQL_USER }} -p${{ secrets.MYSQL_PASSWORD }} -e "CREATE DATABASE IF NOT EXISTS ${{ secrets.MYSQL_DB }};"
-    #     mysql -h ${{ secrets.MYSQL_HOST }} -P ${{ secrets.MYSQL_PORT }} -u ${{ secrets.MYSQL_USER }} -p${{ secrets.MYSQL_PASSWORD }} -D ${{ secrets.MYSQL_DB }} -e "CREATE TABLE IF NOT EXISTS images_for_push (id INT AUTO_INCREMENT PRIMARY KEY, source_registry_url VARCHAR(255) DEFAULT 'docker.io', orig_name_space VARCHAR(255), orig_image_name VARCHAR(255), add_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, platform VARCHAR(20) DEFAULT 'linux/amd64', push_status TINYINT DEFAULT 0);"
-    #     mysql -h ${{ secrets.MYSQL_HOST }} -P ${{ secrets.MYSQL_PORT }} -u ${{ secrets.MYSQL_USER }} -p${{ secrets.MYSQL_PASSWORD }} -D ${{ secrets.MYSQL_DB }} -e "CREATE TABLE IF NOT EXISTS pushed_images (id INT AUTO_INCREMENT PRIMARY KEY, source_registry_url VARCHAR(255) DEFAULT 'docker.io', target_registry_url VARCHAR(255), orig_name_space VARCHAR(255), orig_image_name VARCHAR(255), targ_name_space VARCHAR(255), push_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, registry_image_name VARCHAR(255), push_status TINYINT DEFAULT 0, image_size BIGINT, digest VARCHAR(255), platform VARCHAR(20) DEFAULT 'linux/amd64');"
+    - name: Create database and tables
+      run: |
+        mysql -h ${{ secrets.MYSQL_HOST }} -P ${{ secrets.MYSQL_PORT }} -u ${{ secrets.MYSQL_USER }} -p${{ secrets.MYSQL_PASSWORD }} -e "CREATE DATABASE IF NOT EXISTS ${{ secrets.MYSQL_DB }};"
+        mysql -h ${{ secrets.MYSQL_HOST }} -P ${{ secrets.MYSQL_PORT }} -u ${{ secrets.MYSQL_USER }} -p${{ secrets.MYSQL_PASSWORD }} -D ${{ secrets.MYSQL_DB }} -e "CREATE TABLE IF NOT EXISTS images_for_push (id INT AUTO_INCREMENT PRIMARY KEY, source_registry_url VARCHAR(255) DEFAULT 'docker.io', orig_name_space VARCHAR(255), orig_image_name VARCHAR(255), add_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, platform VARCHAR(20) DEFAULT 'linux/amd64', push_status TINYINT DEFAULT 0);"
+        mysql -h ${{ secrets.MYSQL_HOST }} -P ${{ secrets.MYSQL_PORT }} -u ${{ secrets.MYSQL_USER }} -p${{ secrets.MYSQL_PASSWORD }} -D ${{ secrets.MYSQL_DB }} -e "CREATE TABLE IF NOT EXISTS pushed_images (id INT AUTO_INCREMENT PRIMARY KEY, source_registry_url VARCHAR(255) DEFAULT 'docker.io', target_registry_url VARCHAR(255), orig_name_space VARCHAR(255), orig_image_name VARCHAR(255), targ_name_space VARCHAR(255), push_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, registry_image_name VARCHAR(255), push_status TINYINT DEFAULT 0, image_size BIGINT, digest VARCHAR(255), platform VARCHAR(20) DEFAULT 'linux/amd64');"
 
     - name: Login to Aliyun Registry
       run: |
@@ -95,8 +77,9 @@ jobs:
             count=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -D "$MYSQL_DB" -N -e "SELECT COUNT(*) FROM pushed_images WHERE orig_image_name='$orig_image_name' AND target_registry_url='$target_registry_url' AND targ_name_space='$target_name_space'")
             if [ "$count" -eq 0 ]; then
                 echo "Processing $orig_image_name for $target_registry_url..."
-                # Pull source image
-                docker pull "$source_registry_url/$orig_name_space/$orig_image:$tag"
+
+                # Pull source image with buildx for multi-arch
+                docker buildx pull --platform "$platform" "$source_registry_url/$orig_name_space/$orig_image:$tag"
 
                 # Tag image
                 docker tag "$source_registry_url/$orig_name_space/$orig_image:$tag" "$target_image"
@@ -106,7 +89,7 @@ jobs:
 
                 # Get image info
                 size=$(docker inspect --format='{{.Size}}' "$target_image")
-                digest=$(docker inspect --format='{{.Digest}}' "$target_image")
+                digest=$(docker image inspect --format='{{index .RepoDigests 0}}' "$target_image")
 
                 # Record to DB
                 mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -D "$MYSQL_DB" -e "INSERT INTO pushed_images (source_registry_url, target_registry_url, orig_name_space, orig_image_name, targ_name_space, push_time, registry_image_name, push_status, image_size, digest, platform) VALUES ('$source_registry_url', '$target_registry_url', '$orig_name_space', '$orig_image_name', '$target_name_space', NOW(), '$target_image', 1, $size, '$digest', '$platform')"
@@ -127,3 +110,5 @@ jobs:
     - name: Cleanup
       run: |
         docker system prune -af
+        docker buildx stop mybuilder
+        docker buildx rm mybuilder
